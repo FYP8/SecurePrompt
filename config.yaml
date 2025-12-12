@@ -1,0 +1,18 @@
+system:
+  name: "SecurePrompt"
+  version: "0.2"
+
+thresholds:
+  perplexity_limit: 100.0
+  bert_confidence_limit: 0.80
+  entropy_limit: 4.5
+
+paths:
+  bert_model: "models/bert_classifier"
+  gpt_model: "models/distilgpt2_finetuned"
+
+filters:
+  blocked_keywords:
+    - "ignore previous instructions"
+    - "system prompt"
+    - "DAN mode"
