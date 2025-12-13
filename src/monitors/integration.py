@@ -50,8 +50,8 @@ class SecurePromptPipeline:
 
     def scan_input(self, user_prompt: str) -> dict:
         """
-        Runs the full input validation pipeline using Weighted Voting.
-        Returns a decision dict with scores and breakdown.
+        Runs the pipeline. If encoding is detected, it decodes the text
+        BEFORE sending it to Perplexity and BERT.
         """
         decision = {
             "status": "PASS",
@@ -60,27 +60,38 @@ class SecurePromptPipeline:
             "breakdown": {}
         }
 
-        # --- 1. Heuristic Layer (Member 1) ---
-        # We combine Regex, Keywords, and Encoding into one "Heuristic Score"
-        is_encoded, _, _ = self.encoding.scan(user_prompt)
-        is_keyword_blocked, _ = self.keyword.scan(user_prompt)
-        is_regex_sus, _ = self.regex.scan(user_prompt)
+        # --- 1. Heuristic Layer & Decoding ---
+        # We assume self.encoding.scan returns (is_encoded, decoded_text, method_name)
+        is_encoded, decoded_text, encoding_method = self.encoding.scan(user_prompt)
 
-        # If ANY heuristic fails, score is 1.0, otherwise 0.0
-        if is_encoded or is_keyword_blocked or is_regex_sus:
+        # KEY LOGIC CHANGE:
+        # If we successfully decoded it, we analyze the HIDDEN message.
+        # If not, we analyze the original user input.
+        if is_encoded and decoded_text:
+            print(f"[INFO] Decoding Detected ({encoding_method}). Analyzing hidden content...")
+            text_to_analyze = decoded_text
+            # We still penalize them for trying to hide it!
             score_heuristic = 1.0
         else:
-            score_heuristic = 0.0
+            text_to_analyze = user_prompt
+
+            # Check other heuristics on the original text
+            is_keyword_blocked, _ = self.keyword.scan(user_prompt)
+            is_regex_sus, _ = self.regex.scan(user_prompt)
+
+            if is_keyword_blocked or is_regex_sus:
+                score_heuristic = 1.0
+            else:
+                score_heuristic = 0.0
 
         # --- 2. Statistical Analysis (Member 2) ---
-        # Get raw perplexity and normalize it
-        raw_ppl = self.perplexity.calculate_score(user_prompt)
+        # Analyze the DECODED text (or original if no encoding)
+        raw_ppl = self.perplexity.calculate_score(text_to_analyze)
         score_ppl = self.normalize_perplexity(raw_ppl)
 
         # --- 3. Transformer Detection (Member 3) ---
-        # Uses the new predict_probability() method you added to BertDetector
-        # If you haven't added it yet, this line will error (see note below)
-        score_bert = self.bert.predict_probability(user_prompt)
+        # Analyze the DECODED text
+        score_bert = self.bert.predict_probability(text_to_analyze)
 
         # --- 4. Weighted Calculation ---
         total_risk = (
@@ -92,15 +103,15 @@ class SecurePromptPipeline:
         # --- 5. Final Decision ---
         if total_risk >= self.BLOCKING_THRESHOLD:
             decision["status"] = "BLOCK"
-            decision["reason"] = f"High Risk Score ({total_risk:.4f})"
+            decision[
+                "reason"] = f"High Risk ({total_risk:.2f}) - Hidden Intent Detected" if is_encoded else f"High Risk ({total_risk:.2f})"
 
-        # Populate metrics for the UI/Logs
         decision["total_risk"] = round(total_risk, 4)
         decision["breakdown"] = {
             "heuristic_score": score_heuristic,
             "perplexity_norm": round(score_ppl, 2),
             "bert_prob": round(score_bert, 4),
-            "raw_perplexity": round(raw_ppl, 2)
+            "analyzed_content": text_to_analyze[:50] + "..."  # Log what we actually read
         }
 
         return decision
