@@ -8,7 +8,7 @@ from .policy import PolicyEnforcer  # Member 4
 
 class SecurePromptPipeline:
     def __init__(self):
-        print("Initializing SecurePrompt Pipeline...")
+        print("Initializing SecurePrompt Pipeline (Weighted Ensemble Mode)...")
 
         # --- Layer 1: Heuristics (Member 1) ---
         self.regex = RegexRuleEngine()
@@ -27,73 +27,114 @@ class SecurePromptPipeline:
         self.leakage = LeakageMonitor()
         self.policy = PolicyEnforcer()
 
-        # Thresholds (Configurable)
-        self.PPL_THRESHOLD = 100.0  # Max perplexity allowed
-        self.BERT_CONFIDENCE = 0.80  # Min confidence to auto-block
+        # --- CONFIGURATION: Weighted Ensemble ---
+        # Adjust these weights based on which module you trust most
+        self.weights = {
+            "heuristic": 0.2,  # Regex/Keywords (Low trust, high false positives)
+            "perplexity": 0.3,  # Gibberish/Obfuscation (Medium trust)
+            "bert": 0.5  # Semantic Understanding (High trust)
+        }
+
+        # If the weighted sum >= 0.5, the prompt is BLOCKED.
+        self.BLOCKING_THRESHOLD = 0.5
+
+    def normalize_perplexity(self, ppl_value):
+        """
+        Squashes perplexity (0 to infinity) into a 0.0 - 1.0 score.
+        Logic: If PPL > 100, we consider it 'fully suspicious' (1.0).
+        """
+        if ppl_value > 100.0:
+            return 1.0
+        else:
+            return ppl_value / 100.0
 
     def scan_input(self, user_prompt: str) -> dict:
         """
-        Runs the full input validation pipeline.
-        Returns a decision dict.
+        Runs the pipeline. If encoding is detected, it decodes the text
+        BEFORE sending it to Perplexity and BERT.
         """
         decision = {
             "status": "PASS",
-            "reason": None,
-            "metrics": {}
+            "reason": "Safe",
+            "total_risk": 0.0,
+            "breakdown": {}
         }
 
-        # 1. Heuristic Scan (Fast Fail)
-        # -----------------------------
-        is_encoded, _, reason = self.encoding.scan(user_prompt)
-        if is_encoded: return self._block(decision, reason)
+        # --- 1. Heuristic Layer & Decoding ---
+        # We assume self.encoding.scan returns (is_encoded, decoded_text, method_name)
+        is_encoded, decoded_text, encoding_method = self.encoding.scan(user_prompt)
 
-        is_blocked, kw = self.keyword.scan(user_prompt)
-        if is_blocked: return self._block(decision, f"Keyword Block: {kw}")
+        # KEY LOGIC CHANGE:
+        # If we successfully decoded it, we analyze the HIDDEN message.
+        # If not, we analyze the original user input.
+        if is_encoded and decoded_text:
+            print(f"[INFO] Decoding Detected ({encoding_method}). Analyzing hidden content...")
+            text_to_analyze = decoded_text
+            # We still penalize them for trying to hide it!
+            score_heuristic = 1.0
+        else:
+            text_to_analyze = user_prompt
 
-        is_sus, reason = self.regex.scan(user_prompt)
-        if is_sus: return self._block(decision, reason)
+            # Check other heuristics on the original text
+            is_keyword_blocked, _ = self.keyword.scan(user_prompt)
+            is_regex_sus, _ = self.regex.scan(user_prompt)
 
-        # 2. Statistical Analysis
-        # -----------------------------
-        ppl_score = self.perplexity.calculate_score(user_prompt)
-        entropy = self.stats.calculate_entropy(user_prompt)
+            if is_keyword_blocked or is_regex_sus:
+                score_heuristic = 1.0
+            else:
+                score_heuristic = 0.0
 
-        decision["metrics"]["perplexity"] = round(ppl_score, 2)
-        decision["metrics"]["entropy"] = round(entropy, 2)
+        # --- 2. Statistical Analysis (Member 2) ---
+        # Analyze the DECODED text (or original if no encoding)
+        raw_ppl = self.perplexity.calculate_score(text_to_analyze)
+        score_ppl = self.normalize_perplexity(raw_ppl)
 
-        if ppl_score > self.PPL_THRESHOLD:
-            # Just a warning for now, or block if very high
-            decision["warnings"] = "High Perplexity (Possible Obfuscation)"
+        # --- 3. Transformer Detection (Member 3) ---
+        # Analyze the DECODED text
+        score_bert = self.bert.predict_probability(text_to_analyze)
 
-        # 3. Transformer Detection
-        # -----------------------------
-        is_malicious, confidence = self.bert.predict(user_prompt)
-        decision["metrics"]["bert_malicious_prob"] = round(confidence, 4)
+        # --- 4. Weighted Calculation ---
+        total_risk = (
+                (score_heuristic * self.weights["heuristic"]) +
+                (score_ppl * self.weights["perplexity"]) +
+                (score_bert * self.weights["bert"])
+        )
 
-        if is_malicious and confidence > self.BERT_CONFIDENCE:
-            return self._block(decision, f"BERT Detected Attack (Conf: {confidence:.2%})")
+        # --- 5. Final Decision ---
+        if total_risk >= self.BLOCKING_THRESHOLD:
+            decision["status"] = "BLOCK"
+            decision[
+                "reason"] = f"High Risk ({total_risk:.2f}) - Hidden Intent Detected" if is_encoded else f"High Risk ({total_risk:.2f})"
+
+        decision["total_risk"] = round(total_risk, 4)
+        decision["breakdown"] = {
+            "heuristic_score": score_heuristic,
+            "perplexity_norm": round(score_ppl, 2),
+            "bert_prob": round(score_bert, 4),
+            "analyzed_content": text_to_analyze[:50] + "..."  # Log what we actually read
+        }
 
         return decision
 
     def scan_output(self, llm_response: str) -> dict:
         """
         Scans the LLM output for leakage or policy violations.
+        (Kept mainly as Member 4 implemented it)
         """
         decision = {"status": "PASS", "reason": None}
 
         # Check Leakage
         is_leaked, reason = self.leakage.check_output(llm_response)
         if is_leaked:
-            return self._block(decision, reason)
+            decision["status"] = "BLOCK"
+            decision["reason"] = reason
+            return decision
 
         # Check Policy
         is_violation, reason = self.policy.validate_response(llm_response)
         if is_violation:
-            return self._block(decision, reason)
+            decision["status"] = "BLOCK"
+            decision["reason"] = reason
+            return decision
 
-        return decision
-
-    def _block(self, decision, reason):
-        decision["status"] = "BLOCK"
-        decision["reason"] = reason
         return decision

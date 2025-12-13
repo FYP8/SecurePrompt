@@ -31,16 +31,23 @@ def main():
         result = pipeline.scan_input(user_input)
 
         # 4. Display Results
+        risk = result.get("total_risk", 0.0)
+        breakdown = result.get("breakdown", {})
+
+        print("-" * 50)
         if result["status"] == "BLOCK":
-            print(f"❌ BLOCKED")
+            print(f"❌ BLOCKED (Risk Score: {risk:.4f} / Threshold: 0.5)")
             print(f"   Reason: {result['reason']}")
         else:
-            print(f"✅ PASSED")
-            print(f"   Metrics: {result['metrics']}")
-            if "warnings" in result:
-                print(f"   ⚠️ Warning: {result['warnings']}")
+            print(f"✅ PASSED (Risk Score: {risk:.4f})")
 
-        print("-" * 40)
+        # Show the "Why" (The Ensemble Voting)
+        if breakdown:
+            print(f"\n   📊 Model Voting Breakdown:")
+            print(f"      • Heuristic (Regex/Keys): {breakdown.get('heuristic_score', 0.0)} (Weight: 0.2)")
+            print(f"      • Perplexity (Gibberish): {breakdown.get('perplexity_norm', 0.0)} (Weight: 0.3)")
+            print(f"      • BERT AI (Semantic):     {breakdown.get('bert_prob', 0.0):.4f} (Weight: 0.5)")
+        print("-" * 50)
 
 
 if __name__ == "__main__":
