@@ -18,6 +18,33 @@ class BertDetector:
         self.model = BertForSequenceClassification.from_pretrained(model_path).to(self.device)
         self.model.eval()
 
+    def predict_probability(self, text):
+        """
+        Returns a float between 0.0 (Safe) and 1.0 (Malicious).
+        Required for the Weighted Ensemble voting system.
+        """
+        # Tokenize
+        inputs = self.tokenizer(
+            text,
+            return_tensors="pt",
+            truncation=True,
+            padding=True,
+            max_length=128
+        )
+        # Move to device (GPU/CPU)
+        inputs = {k: v.to(self.device) for k, v in inputs.items()}
+
+        with torch.no_grad():
+            outputs = self.model(**inputs)
+            logits = outputs.logits
+            # Apply Softmax to get probabilities (0.0 - 1.0)
+            probs = torch.softmax(logits, dim=1)
+
+            # We assume Index 1 = "Malicious" (Check your training labels if unsure!)
+            malicious_score = probs[0][1].item()
+
+        return malicious_score
+
     def predict(self, text: str):
         """
         Returns: (is_malicious (bool), confidence_score (float))

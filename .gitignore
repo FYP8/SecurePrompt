@@ -1,10 +1,8 @@
-# --- Python & Virtual Environment ---
 venv/
 __pycache__/
 *.pyc
 .env
 
-# --- CRITICAL: Large Model Files (Do NOT remove this) ---
 models/
 *.bin
 *.safetensors
@@ -12,18 +10,15 @@ models/
 *.pth
 *.zip
 
-# --- Datasets (Prevents uploading 397k rows) ---
 data/
 *.csv
 
-# --- Training Outputs (Logs & Checkpoints) ---
 results_bert/
 results_gpt/
 logs/
 logs_gpt/
 wandb/
 
-# --- IDE Settings (PyCharm/VSCode) ---
 .idea/
 .vscode/
 *.swp
